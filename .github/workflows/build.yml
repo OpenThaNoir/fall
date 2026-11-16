@@ -26,3 +26,11 @@ jobs:
           JAR=$(ls build/libs/fallpredict-*.jar | grep -v -e sources -e dev | head -1)
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest "$JAR" --title "Fall Predict (latest build)" --notes "Minecraft 1.21.11, Fabric. Needs Fabric API." --target "$GITHUB_SHA"
+      - name: Commit jar into repo (dist/)
+        run: |
+          mkdir -p dist
+          cp "$(ls build/libs/fallpredict-*.jar | grep -v -e sources -e dev | head -1)" dist/fallpredict.jar
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add dist/fallpredict.jar
+          git diff --cached --quiet || (git commit -m "Update built jar [skip ci]" && git push)
