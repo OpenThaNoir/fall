@@ -35,14 +35,17 @@ import java.util.UUID;
 public class FallPredictClient implements ClientModInitializer {
 
     // ---- settings (edit and rebuild) ----
-    static final int HORIZON_MS_OVERRIDE = -1;  // -1 = use your own ping; or set e.g. 50
-    static final double EXTRA_MS = 0;           // add to the horizon (e.g. +their one-way delay)
+    static final int HORIZON_MS_OVERRIDE = -1;  // -1 = use your own ping; or set e.g. 80
+    static double extraMs = 30;                 // added to the horizon; adjust in game with [ and ]
     static final double MAX_RANGE = 96;
+    static final double MIN_SPEED = 0.6;        // blocks/tick; ignores jumping/walking, keeps fast falls + elytra
+    static final double AIM_CONE_DEG = 35;      // only the player nearest your crosshair within this cone
+    static final int MAX_TARGETS = 1;
     static final int DRAW_MS = 60;              // gizmo lifetime; redrawn every tick (50 ms)
-    static final int COLOR_BOX = 0xFF33E6FF, COLOR_LINE = 0xFFFFD91A;
+    static final int COLOR_BOX = 0xFF33E6FF;
 
     static boolean enabled = true;
-    static KeyMapping toggleKey;
+    static KeyMapping toggleKey, moreKey, lessKey;
     static final Map<UUID, Vec3> lastPos = new HashMap<>();
 
     @Override
@@ -51,6 +54,10 @@ public class FallPredictClient implements ClientModInitializer {
                 Identifier.fromNamespaceAndPath("fallpredict", "main"));
         toggleKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
                 "key.fallpredict.toggle", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_K, category));
+        moreKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+                "key.fallpredict.more", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_BRACKET, category));
+        lessKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+                "key.fallpredict.less", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_LEFT_BRACKET, category));
         ClientTickEvents.END_CLIENT_TICK.register(this::tick);
     }
 
@@ -61,10 +68,24 @@ public class FallPredictClient implements ClientModInitializer {
                     Component.literal("Fall Predict: " + (enabled ? "ON" : "OFF")), true);
         }
         if (mc.level == null || mc.player == null) { lastPos.clear(); return; }
+        boolean changed = false;
+        while (moreKey.consumeClick()) { extraMs += 10; changed = true; }
+        while (lessKey.consumeClick()) { extraMs -= 10; changed = true; }
+        if (changed) {
+            double h = (HORIZON_MS_OVERRIDE >= 0 ? HORIZON_MS_OVERRIDE : latency(mc, mc.player)) + extraMs;
+            mc.player.displayClientMessage(Component.literal(
+                    String.format("Fall Predict horizon: %.0f ms (extra %.0f)", h, extraMs)), true);
+        }
 
         List<? extends Player> players = mc.level.players();
-        double horizonMs = (HORIZON_MS_OVERRIDE >= 0 ? HORIZON_MS_OVERRIDE : latency(mc, mc.player)) + EXTRA_MS;
+        double horizonMs = Math.max(0, (HORIZON_MS_OVERRIDE >= 0 ? HORIZON_MS_OVERRIDE : latency(mc, mc.player)) + extraMs);
         double ticks = horizonMs / 50.0;
+
+        record Cand(AABB end, double dot) {}
+        List<Cand> cands = new java.util.ArrayList<>();
+        Vec3 eye = mc.player.getEyePosition();
+        Vec3 look = mc.player.getLookAngle();
+        double minDot = Math.cos(Math.toRadians(AIM_CONE_DEG));
 
         for (Player p : players) {
             Vec3 pos = p.position();
@@ -78,16 +99,20 @@ public class FallPredictClient implements ClientModInitializer {
             boolean gliding = p.isFallFlying();
             double g = p.hasEffect(MobEffects.SLOW_FALLING) ? 0.01 : 0.08;
             Vec3 d = pos.subtract(prev); // movement during the last tick
-            if (d.lengthSqr() < 1.0E-6) continue;
+            if (d.length() < MIN_SPEED) continue; // not a fast fall / glide
+            Vec3 dir = p.getBoundingBox().getCenter().subtract(eye).normalize();
+            double dot = dir.dot(look);
+            if (dot < minDot) continue;           // not near your crosshair
 
             // Velocity for the NEXT tick. Gliding: keep it (elytra changes slowly).
             // Not gliding (incl. the moment they take the elytra off): vanilla air physics, momentum kept.
             Vec3 vel = gliding ? d : new Vec3(d.x * 0.91, (d.y - g) * 0.98, d.z * 0.91);
 
-            AABB end = predict(mc.level, p, pos, vel, ticks, gliding, g);
-            Vec3 from = p.getBoundingBox().getCenter();
-            Gizmos.cuboid(end, GizmoStyle.stroke(COLOR_BOX)).setAlwaysOnTop().persistForMillis(DRAW_MS);
-            Gizmos.line(from, end.getCenter(), COLOR_LINE).setAlwaysOnTop().persistForMillis(DRAW_MS);
+            cands.add(new Cand(predict(mc.level, p, pos, vel, ticks, gliding, g), dot));
+        }
+        cands.sort((a, b) -> Double.compare(b.dot, a.dot));
+        for (int i = 0; i < Math.min(MAX_TARGETS, cands.size()); i++) {
+            Gizmos.cuboid(cands.get(i).end, GizmoStyle.stroke(COLOR_BOX)).setAlwaysOnTop().persistForMillis(DRAW_MS);
         }
         lastPos.keySet().retainAll(players.stream().map(Player::getUUID).toList());
     }

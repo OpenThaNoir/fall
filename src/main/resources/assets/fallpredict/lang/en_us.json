@@ -1,4 +1,6 @@
 {
   "key.fallpredict.toggle": "Toggle Fall Predict",
+  "key.fallpredict.more": "Fall Predict: look further ahead (+10 ms)",
+  "key.fallpredict.less": "Fall Predict: look less far ahead (-10 ms)",
   "key.category.fallpredict.main": "Fall Predict"
 }
